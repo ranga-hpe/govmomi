@@ -104,12 +104,22 @@ func (cmd *change) Run(ctx context.Context, f *flag.FlagSet) error {
 					return fmt.Errorf("No ports for portgroup %s\n", cmd.pg)
 				}
 
-				dvPort := &types.DistributedVirtualSwitchPortConnection {
-					SwitchUuid: dvPortsInfo[0].DvsUuid,
-					PortKey:    dvPortsInfo[0].Key,
+				freeDvPortFound := false
+				for _, dvPortInfo := range dvPortsInfo {
+					if dvPortInfo.Connectee == nil {
+						dvPort := &types.DistributedVirtualSwitchPortConnection {
+							SwitchUuid: dvPortInfo.DvsUuid,
+							PortKey:    dvPortInfo.Key,
+						}
+						nic.Spec.DistributedVirtualPort = dvPort
+						nic.Spec.Portgroup = ""
+						freeDvPortFound = true
+					}
 				}
-				nic.Spec.DistributedVirtualPort = dvPort
-				nic.Spec.Portgroup = ""
+				if freeDvPortFound == false {
+					return fmt.Errorf("No free ports found in portgroup %s\n", cmd.pg)
+				}
+
 			} else {
 				nic.Spec.DistributedVirtualPort = nil
 				if cmd.pg != "" {
