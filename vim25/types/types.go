@@ -11964,6 +11964,10 @@ type CustomizationFixedIp struct {
 	IpAddress string `xml:"ipAddress" json:"ipAddress"`
 }
 
+func (b *CustomizationFixedIp) GetCustomizationIpGenerator() *CustomizationIpGenerator {
+  return &b.CustomizationIpGenerator
+}
+
 func init() {
 	t["CustomizationFixedIp"] = reflect.TypeOf((*CustomizationFixedIp)(nil)).Elem()
 }
@@ -45361,6 +45365,8 @@ type ServiceLocatorNamePassword struct {
 	Username string `xml:"username" json:"username"`
 	Password string `xml:"password" json:"password"`
 }
+
+func (b *ServiceLocatorNamePassword) GetServiceLocatorCredential() *ServiceLocatorCredential { return &b.ServiceLocatorCredential }
 
 func init() {
 	t["ServiceLocatorNamePassword"] = reflect.TypeOf((*ServiceLocatorNamePassword)(nil)).Elem()
