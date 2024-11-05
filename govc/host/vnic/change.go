@@ -20,16 +20,21 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 
 	"github.com/vmware/govmomi/govc/cli"
 	"github.com/vmware/govmomi/govc/flags"
 	"github.com/vmware/govmomi/vim25/mo"
+	"github.com/vmware/govmomi/vim25/types"
+	"github.com/vmware/govmomi/object"
 )
 
 type change struct {
 	*flags.HostSystemFlag
 
 	mtu int32
+	dswitch string
+	pg string
 }
 
 func init() {
@@ -41,6 +46,9 @@ func (cmd *change) Register(ctx context.Context, f *flag.FlagSet) {
 	cmd.HostSystemFlag.Register(ctx, f)
 
 	f.Var(flags.NewInt32(&cmd.mtu), "mtu", "vmk MTU")
+	f.StringVar(&cmd.pg, "dportgroup", "", "vmk target dportgroup name")
+	f.StringVar(&cmd.dswitch, "dswitch", "", "vmk target dswitch name")
+
 }
 
 func (cmd *change) Process(ctx context.Context) error {
@@ -83,10 +91,109 @@ func (cmd *change) Run(ctx context.Context, f *flag.FlagSet) error {
 
 	for _, nic := range mns.NetworkInfo.Vnic {
 		if nic.Device == device {
-			nic.Spec.Mtu = cmd.mtu
+			if cmd.mtu != 0 {
+				nic.Spec.Mtu = cmd.mtu
+			}
+			if cmd.dswitch != "" {
+				dvPortsInfo, err := cmd.getPortInfo(ctx)
+				if err != nil {
+					return err
+				}
+
+				if len(dvPortsInfo) == 0 {
+					return fmt.Errorf("No ports for portgroup %s\n", cmd.pg)
+				}
+
+				freeDvPortFound := false
+				for _, dvPortInfo := range dvPortsInfo {
+					if dvPortInfo.Connectee == nil {
+						dvPort := &types.DistributedVirtualSwitchPortConnection {
+							SwitchUuid: dvPortInfo.DvsUuid,
+							PortKey:    dvPortInfo.Key,
+						}
+						nic.Spec.DistributedVirtualPort = dvPort
+						nic.Spec.Portgroup = ""
+						freeDvPortFound = true
+					}
+				}
+				if freeDvPortFound == false {
+					return fmt.Errorf("No free ports found in portgroup %s\n", cmd.pg)
+				}
+
+			} else {
+				nic.Spec.DistributedVirtualPort = nil
+				if cmd.pg != "" {
+					nic.Spec.Portgroup = cmd.pg
+				}
+			}
 			return ns.UpdateVirtualNic(ctx, device, nic.Spec)
 		}
 	}
 
 	return errors.New(device + " not found")
+}
+
+func (cmd *change) getPortInfo(ctx context.Context) ([]types.DistributedVirtualPort, error) {
+
+	res := []types.DistributedVirtualPort{}
+
+	finder, err := cmd.Finder()
+	if err != nil {
+		return res, err
+	}
+
+	// Retrieve DVS reference
+	net, err := finder.Network(ctx, cmd.dswitch)
+	if err != nil {
+		return res, err
+	}
+
+	// Convert to DVS object type
+	dvs, ok := net.(*object.DistributedVirtualSwitch)
+	if !ok {
+		return res, fmt.Errorf("%s (%s) is not a DVS", cmd.dswitch, net.Reference().Type)
+	}
+
+	// Set base search criteria
+	criteria := types.DistributedVirtualSwitchPortCriteria{
+		// Connected:  types.NewBool(true),
+		// Active:     types.NewBool(true),
+		UplinkPort: types.NewBool(false),
+		Inside:     types.NewBool(true),
+		// Connected:  types.NewBool(cmd.connected),
+		// Active:     types.NewBool(cmd.active),
+		// UplinkPort: types.NewBool(cmd.uplinkPort),
+		// Inside:     types.NewBool(cmd.inside),
+	}
+
+	// If a distributed virtual portgroup path is set, then add its portgroup key to the base criteria
+	if len(cmd.pg) > 0 {
+		// Retrieve distributed virtual portgroup reference
+		net, err = finder.Network(ctx, cmd.pg)
+		if err != nil {
+			return res, err
+		}
+
+		// Convert distributed virtual portgroup object type
+		dvpg, ok := net.(*object.DistributedVirtualPortgroup)
+		if !ok {
+			return res, fmt.Errorf("%s (%s) is not a DVPG", cmd.pg, net.Reference().Type)
+		}
+
+		// Obtain portgroup key property
+		var dvp mo.DistributedVirtualPortgroup
+		if err := dvpg.Properties(ctx, dvpg.Reference(), []string{"key"}, &dvp); err != nil {
+			return res, err
+		}
+
+		// Add portgroup key to port search criteria
+		criteria.PortgroupKey = []string{dvp.Key}
+	}
+
+	res, err = dvs.FetchDVPorts(ctx, &criteria)
+	if err != nil {
+		return res, err
+	}
+
+	return res, err
 }
